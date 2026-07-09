@@ -14,7 +14,8 @@ feed); together they give Grafana the full picture the raw graph-node metrics ca
 
 ## Metrics
 
-Per-indexer (labelled `indexer`, `indexer_name`):
+Per-indexer (labelled `indexer`, `indexer_name`) — for the `INDEXERS` detail set, and (with
+`ALL_INDEXER_STAKE=true`) every registered indexer above `MIN_STAKE_GRT`:
 
 | Metric | Source field |
 |---|---|
@@ -51,10 +52,28 @@ All via env (see `.env.example`); everything has a default.
 | Var | Default | Notes |
 |---|---|---|
 | `NETWORK_SUBGRAPH_URL` | in-cluster GNArb | GraphQL endpoint; override to run locally |
-| `INDEXERS` | our wallet | comma-separated wallets to track |
+| `INDEXERS` | our wallet | comma-separated wallets — the **detail** set (stake + allocations + signal + names) |
+| `ALL_INDEXER_STAKE` | `false` | also emit stake gauges for every registered indexer over the floor |
+| `MIN_STAKE_GRT` | `100000` | stake floor for the all-indexers view **and** for `gen-indexers.ts` pruning |
 | `REFRESH_SECONDS` | `60` | stake/allocation/signal poll |
 | `NAME_REFRESH_SECONDS` | `1800` | display-name poll (names change rarely) |
 | `PORT` | `9400` | HTTP listen port |
+
+## Indexer names (`indexers.json`)
+
+Indexer display names come from a committed **`indexers.json`** (`{ "<wallet>": "<name>" }`), baked into
+the image and loaded at startup — so there's no risky name field on the runtime critical path.
+Regenerate it out-of-band (drops anyone below the stake floor, which prunes deregistered indexers):
+
+```sh
+NETWORK_SUBGRAPH_URL="https://gateway.thegraph.com/api/<key>/subgraphs/id/<network-subgraph>" \
+MAINNET_RPC_URL="https://eth.rpc.example/v1/<key>/" \
+MIN_STAKE_GRT=100000 \
+  bun run gen:indexers > indexers.json
+```
+
+Name preference: ENS primary name (mainnet reverse resolution) → network-subgraph `defaultDisplayName`
+→ indexer URL host. `MAINNET_RPC_URL` is optional (without it, ENS reverse is skipped).
 
 ## Run
 

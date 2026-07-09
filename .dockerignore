@@ -5,4 +5,5 @@ node_modules
 .env
 README.md
 test
+scripts
 CLAUDE.md

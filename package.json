@@ -7,9 +7,11 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "typecheck": "bun --bun tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "gen:indexers": "bun run scripts/gen-indexers.ts"
   },
   "devDependencies": {
+    "@noble/hashes": "^2.2.0",
     "@types/bun": "latest",
     "typescript": "^5"
   }
