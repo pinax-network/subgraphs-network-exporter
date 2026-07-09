@@ -3,6 +3,9 @@ FROM oven/bun:1.1-alpine
 
 WORKDIR /app
 COPY src ./src
+# Static indexer name map (regenerated out-of-band by scripts/gen-indexers.ts). Committed so the image
+# ships with it; the exporter treats it as optional at runtime.
+COPY indexers.json ./
 
 ENV PORT=9400
 EXPOSE 9400
