@@ -42,9 +42,13 @@ async function gql(query: string): Promise<any> {
   return j.data;
 }
 
+// Stake query uses ONLY fields the previous exporter proved live — a schema hiccup here would take
+// down every economic metric, so the (newer, less-certain) defaultDisplayName is resolved separately
+// in the slow names loop instead.
 const stakeQuery = (id: string) =>
-  `{ indexer(id:"${id}"){ defaultDisplayName stakedTokens delegatedTokens delegatedCapacity ` +
+  `{ indexer(id:"${id}"){ stakedTokens delegatedTokens delegatedCapacity ` +
   `allocatedTokens availableStake queryFeesCollected rewardsEarned } }`;
+const indexerNameQuery = (id: string) => `{ indexer(id:"${id}"){ defaultDisplayName } }`;
 const allocQuery = (id: string) =>
   `{ indexer(id:"${id}"){ allocations(first:1000, where:{status:Active}){ ` +
   `allocatedTokens subgraphDeployment { ipfsHash stakedTokens signalledTokens } } } }`;
@@ -136,9 +140,7 @@ async function refreshEconomics(): Promise<void> {
     try {
       const d = (await gql(stakeQuery(id)))?.indexer;
       if (d) {
-        const name = d.defaultDisplayName ?? "";
-        indexerNameCache.set(id, name || indexerNameCache.get(id) || "");
-        stakeRows.push({ id, name: indexerNameCache.get(id) ?? "", data: d });
+        stakeRows.push({ id, name: indexerNameCache.get(id) ?? "", data: d });   // name from the names loop
         ok++;
       }
     } catch (e) { console.error(`stake ${id}: ${e}`); }
@@ -171,6 +173,11 @@ async function refreshEconomics(): Promise<void> {
 async function refreshNames(): Promise<void> {
   const names = new Map<string, string>();
   for (const id of INDEXERS) {
+    // indexer display name — isolated try/catch so an unsupported field never breaks subgraph names
+    try {
+      const dn = (await gql(indexerNameQuery(id)))?.indexer?.defaultDisplayName;
+      if (dn) indexerNameCache.set(id, dn);
+    } catch (e) { console.error(`indexer-name ${id}: ${e}`); }
     try {
       const al = (await gql(nameQuery(id)))?.indexer?.allocations ?? [];
       for (const a of al) {
