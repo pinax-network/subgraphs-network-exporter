@@ -1,0 +1,16 @@
+{
+  "name": "subgraphs-network-exporter",
+  "version": "0.1.0",
+  "description": "Prometheus exporter for The Graph network subgraph — on-chain indexer economics (stake, delegation, allocations, curation signal) for any set of indexers",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "typecheck": "bun --bun tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
