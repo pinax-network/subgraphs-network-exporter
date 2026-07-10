@@ -75,7 +75,10 @@ const stakeAllQuery = (minWei: string) =>
   `{ indexers(first:1000, orderBy:stakedTokens, orderDirection:desc, where:{stakedTokens_gt:"${minWei}"}){ id ${STAKE_FIELDS} } }`;
 const allocQuery = (id: string) =>
   `{ indexer(id:"${id}"){ allocations(first:1000, where:{status:Active}){ ` +
-  `allocatedTokens subgraphDeployment { ipfsHash stakedTokens signalledTokens } } } }`;
+  `allocatedTokens subgraphDeployment { ipfsHash stakedTokens signalledTokens ` +
+  // full active-allocation set on each deployment → count distinct indexers (network-wide, from the
+  // network subgraph — populated even when the gateway QoS feed has no data for the subgraph).
+  `indexerAllocations(first:1000, where:{status:Active}){ indexer { id } } } } } }`;
 const nameQuery = (id: string) =>
   `{ indexer(id:"${id}"){ allocations(first:1000, where:{status:Active}){ subgraphDeployment { ipfsHash ` +
   `versions(first:1, orderBy:version, orderDirection:desc){ subgraph { metadata { displayName } } } } } } }`;
@@ -101,7 +104,7 @@ const FIELDS: [string, string, string][] = [
 
 export type StakeRow = { id: string; name: string; data: Record<string, unknown> };
 export type AllocRow = { indexer: string; indexerName: string; hash: string; allocated: number };
-export type DeploymentAgg = { total: number; signal: number };
+export type DeploymentAgg = { total: number; signal: number; indexers: number };
 
 export function renderStake(rows: StakeRow[]): string {
   const out: string[] = [];
@@ -137,9 +140,12 @@ export function renderDeployments(deps: Map<string, DeploymentAgg>): string {
   const out = ["# HELP subgraph_total_allocated_grt Tokens allocated on this deployment by ALL indexers (GRT)",
     "# TYPE subgraph_total_allocated_grt gauge",
     "# HELP subgraph_signalled_grt Curation signal on this deployment (GRT) - drives indexing-reward split",
-    "# TYPE subgraph_signalled_grt gauge"];
+    "# TYPE subgraph_signalled_grt gauge",
+    "# HELP subgraph_indexer_count Number of indexers with an active allocation on this deployment (network subgraph)",
+    "# TYPE subgraph_indexer_count gauge"];
   for (const [hash, d] of deps) out.push(`subgraph_total_allocated_grt{deployment="${esc(hash)}"} ${d.total.toFixed(6)}`);
   for (const [hash, d] of deps) out.push(`subgraph_signalled_grt{deployment="${esc(hash)}"} ${d.signal.toFixed(6)}`);
+  for (const [hash, d] of deps) out.push(`subgraph_indexer_count{deployment="${esc(hash)}"} ${d.indexers}`);
   return out.join("\n") + "\n";
 }
 
@@ -180,7 +186,9 @@ async function refreshEconomics(): Promise<void> {
         const hash = sd.ipfsHash;
         if (!hash) continue;
         allocs.push({ indexer: id, indexerName: iname, hash, allocated: grt(a.allocatedTokens) });
-        deps.set(hash, { total: grt(sd.stakedTokens), signal: grt(sd.signalledTokens) });   // deployment-global
+        // distinct indexers with an active allocation on this deployment (network-wide)
+        const ixs = new Set((sd.indexerAllocations ?? []).map((x: any) => x?.indexer?.id).filter(Boolean));
+        deps.set(hash, { total: grt(sd.stakedTokens), signal: grt(sd.signalledTokens), indexers: ixs.size });
       }
     } catch (e) { console.error(`alloc ${id}: ${e}`); allocErr++; }
   }

@@ -38,10 +38,11 @@ test("renderAlloc: sums an indexer's allocations per deployment", () => {
   expect(out).toContain('indexer_subgraph_allocated_grt{indexer="0xabc",indexer_name="us",deployment="Qm2"} 7.000000');
 });
 
-test("renderDeployments: network-wide total + signal per deployment", () => {
-  const out = renderDeployments(new Map([["Qm1", { total: 500, signal: 42.5 }]]));
+test("renderDeployments: network-wide total + signal + indexer count per deployment", () => {
+  const out = renderDeployments(new Map([["Qm1", { total: 500, signal: 42.5, indexers: 7 }]]));
   expect(out).toContain('subgraph_total_allocated_grt{deployment="Qm1"} 500.000000');
   expect(out).toContain('subgraph_signalled_grt{deployment="Qm1"} 42.500000');
+  expect(out).toContain('subgraph_indexer_count{deployment="Qm1"} 7');
 });
 
 test("renderNames: deployment -> display name info gauge", () => {
