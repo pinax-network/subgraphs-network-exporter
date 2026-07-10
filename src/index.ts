@@ -65,7 +65,7 @@ async function gql(query: string): Promise<any> {
 
 // Only fields the previous (proven-live) exporter used — no name field on the critical path.
 const STAKE_FIELDS = "stakedTokens delegatedTokens delegatedCapacity allocatedTokens availableStake " +
-  "queryFeesCollected rewardsEarned";
+  "queryFeesCollected rewardsEarned thawingTokens delegatedThawingTokens";
 // One batched query for the explicit detail set (id_in) — no min-stake floor: an explicitly-tracked
 // indexer (e.g. ours) always shows, whatever its stake.
 const stakeListQuery = (ids: string[]) =>
@@ -100,6 +100,11 @@ const FIELDS: [string, string, string][] = [
   ["indexer_available_stake_grt", "availableStake", "Available (unallocated) stake"],
   ["indexer_query_fees_collected_grt", "queryFeesCollected", "Lifetime query fees collected"],
   ["indexer_rewards_earned_grt", "rewardsEarned", "Lifetime indexing rewards earned"],
+  // Thawing = tokens in the 28-day undelegation/unstake lock. delegated_thawing is the early-warning
+  // signal for delegator exits (e.g. 197.8k thawing 2026-07: three delegators, two full exits) —
+  // availableStake already nets it out, so this is the ONLY place the outflow is visible pre-withdrawal.
+  ["indexer_self_thawing_grt", "thawingTokens", "Indexer self-stake currently thawing (unstake lock)"],
+  ["indexer_delegated_thawing_grt", "delegatedThawingTokens", "Delegated tokens currently thawing (undelegation lock)"],
 ];
 
 export type StakeRow = { id: string; name: string; data: Record<string, unknown> };
