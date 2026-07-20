@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { grt, esc, renderStake, renderAlloc, renderDeployments, renderNames } from "../src/index.ts";
+import { grt, esc, renderStake, renderAlloc, renderDeployments, renderNames, renderNetwork } from "../src/index.ts";
 
 test("grt: wei string -> GRT float, exact via BigInt", () => {
   expect(grt("1000000000000000000")).toBe(1);
@@ -48,4 +48,24 @@ test("renderDeployments: network-wide total + signal + indexer count per deploym
 test("renderNames: deployment -> display name info gauge", () => {
   const out = renderNames(new Map([["Qm1", "Lido"]]));
   expect(out).toContain('subgraph_name_info{deployment="Qm1",name="Lido"} 1');
+});
+
+test("renderStake: emits reward-cut ratio from ppm", () => {
+  const out = renderStake([{
+    id: "0xabc", name: "pinax2.eth",
+    data: {
+      stakedTokens: "0", delegatedTokens: "0", delegatedCapacity: "0", allocatedTokens: "0",
+      availableStake: "0", queryFeesCollected: "0", rewardsEarned: "0", indexingRewardCut: 250000,
+    },
+  }]);
+  expect(out).toContain('indexer_indexing_reward_cut_ratio{indexer="0xabc",indexer_name="pinax2.eth"} 0.250000');
+});
+
+test("renderNetwork: total signal + issuance per block (wei -> GRT)", () => {
+  const out = renderNetwork({
+    totalTokensSignalled: "9292523000000000000000000",
+    networkGRTIssuancePerBlock: "120730000000000000000",
+  });
+  expect(out).toContain("graph_network_total_signal_grt 9292523.000000");
+  expect(out).toContain("graph_network_issuance_per_block_grt 120.730000");
 });
