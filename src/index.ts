@@ -64,8 +64,13 @@ async function gql(query: string): Promise<any> {
 }
 
 // Only fields the previous (proven-live) exporter used — no name field on the critical path.
+// indexingRewardCut (ppm) feeds the delegator-APY panels: delegators receive (1 - cut) of rewards.
 const STAKE_FIELDS = "stakedTokens delegatedTokens delegatedCapacity allocatedTokens availableStake " +
-  "queryFeesCollected rewardsEarned thawingTokens delegatedThawingTokens";
+  "queryFeesCollected rewardsEarned thawingTokens delegatedThawingTokens indexingRewardCut";
+// Network-wide reward parameters — one tiny query. Gross-GRT/day for an indexer =
+// reward_index * issuance_per_block * blocks_per_day / total_signal (see the rewards dashboard row).
+const networkQuery =
+  `{ graphNetworks(first:1){ totalTokensSignalled networkGRTIssuancePerBlock } }`;
 // One batched query for the explicit detail set (id_in) — no min-stake floor: an explicitly-tracked
 // indexer (e.g. ours) always shows, whatever its stake.
 const stakeListQuery = (ids: string[]) =>
@@ -115,14 +120,28 @@ export function renderStake(rows: StakeRow[]): string {
   const out: string[] = [];
   for (const [metric, , help] of FIELDS) out.push(`# HELP ${metric} ${help} (GRT)`, `# TYPE ${metric} gauge`);
   out.push("# HELP indexer_capacity_used_ratio Allocated / delegation capacity (0-1)",
-    "# TYPE indexer_capacity_used_ratio gauge");
+    "# TYPE indexer_capacity_used_ratio gauge",
+    "# HELP indexer_indexing_reward_cut_ratio Share of indexing rewards the indexer keeps (0-1); delegators get the rest",
+    "# TYPE indexer_indexing_reward_cut_ratio gauge");
   for (const row of rows) {
     const lbl = `indexer="${esc(row.id)}",indexer_name="${esc(row.name)}"`;
     for (const [metric, key] of FIELDS) out.push(`${metric}{${lbl}} ${grt(row.data[key]).toFixed(6)}`);
     const cap = grt(row.data.delegatedCapacity), alloc = grt(row.data.allocatedTokens);
     out.push(`indexer_capacity_used_ratio{${lbl}} ${(cap ? alloc / cap : 0).toFixed(6)}`);
+    // indexingRewardCut is ppm (plain int, NOT wei)
+    out.push(`indexer_indexing_reward_cut_ratio{${lbl}} ${(Number(row.data.indexingRewardCut ?? 0) / 1e6).toFixed(6)}`);
   }
   return out.join("\n") + "\n";
+}
+
+export function renderNetwork(net: { totalTokensSignalled?: unknown; networkGRTIssuancePerBlock?: unknown }): string {
+  return ["# HELP graph_network_total_signal_grt Total curation signal across the ENTIRE network (GRT)",
+    "# TYPE graph_network_total_signal_grt gauge",
+    `graph_network_total_signal_grt ${grt(net.totalTokensSignalled).toFixed(6)}`,
+    "# HELP graph_network_issuance_per_block_grt Network GRT issuance per block (GRT)",
+    "# TYPE graph_network_issuance_per_block_grt gauge",
+    `graph_network_issuance_per_block_grt ${grt(net.networkGRTIssuancePerBlock).toFixed(6)}`,
+  ].join("\n") + "\n";
 }
 
 export function renderAlloc(allocs: AllocRow[]): string {
@@ -162,11 +181,16 @@ export function renderNames(names: Map<string, string>): string {
 }
 
 // ── runtime state ────────────────────────────────────────────────────────────────────────────────
-let stakeBlock = "", allocBlock = "", depBlock = "", nameBlock = "";
+let stakeBlock = "", allocBlock = "", depBlock = "", nameBlock = "", netBlock = "";
 let up = 0, lastRefresh = 0, trackedCount = 0, deploymentCount = 0;
 
 async function refreshEconomics(): Promise<void> {
   let stakeOk = false, allocOk = false, tracked = 0;
+  // network-wide reward parameters (total signal + issuance) — non-fatal if it blips
+  try {
+    const net = (await gql(networkQuery))?.graphNetworks?.[0];
+    if (net) netBlock = renderNetwork(net);
+  } catch (e) { console.error(`network: ${e}`); }
   // stake — ONE batched query for the target set (detail list, or every indexer over the floor)
   try {
     const q = ALL_INDEXER_STAKE ? stakeAllQuery(MIN_STAKE_WEI) : stakeListQuery(INDEXERS);
@@ -233,7 +257,7 @@ async function refreshNames(): Promise<void> {
 }
 
 function body(): string {
-  return stakeBlock + allocBlock + depBlock + nameBlock +
+  return stakeBlock + allocBlock + depBlock + nameBlock + netBlock +
     "# TYPE subgraphs_network_exporter_up gauge\n" + `subgraphs_network_exporter_up ${up}\n` +
     "# TYPE subgraphs_network_exporter_last_refresh_seconds gauge\n" + `subgraphs_network_exporter_last_refresh_seconds ${lastRefresh}\n` +
     "# TYPE subgraphs_network_exporter_indexers_tracked gauge\n" + `subgraphs_network_exporter_indexers_tracked ${trackedCount}\n` +
