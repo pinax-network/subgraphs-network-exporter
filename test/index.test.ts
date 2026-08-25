@@ -30,9 +30,9 @@ test("renderStake: per-indexer gauges + capacity ratio, labelled by wallet+name"
 
 test("renderAlloc: sums an indexer's allocations per deployment", () => {
   const out = renderAlloc([
-    { indexer: "0xabc", indexerName: "us", hash: "Qm1", allocated: 10 },
-    { indexer: "0xabc", indexerName: "us", hash: "Qm1", allocated: 5 },
-    { indexer: "0xabc", indexerName: "us", hash: "Qm2", allocated: 7 },
+    { indexer: "0xabc", indexerName: "us", hash: "Qm1", allocated: 10 , createdAtEpoch: 1300 },
+    { indexer: "0xabc", indexerName: "us", hash: "Qm1", allocated: 5 , createdAtEpoch: 1300 },
+    { indexer: "0xabc", indexerName: "us", hash: "Qm2", allocated: 7 , createdAtEpoch: 1300 },
   ]);
   expect(out).toContain('indexer_subgraph_allocated_grt{indexer="0xabc",indexer_name="us",deployment="Qm1"} 15.000000');
   expect(out).toContain('indexer_subgraph_allocated_grt{indexer="0xabc",indexer_name="us",deployment="Qm2"} 7.000000');
