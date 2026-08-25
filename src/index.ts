@@ -70,7 +70,7 @@ const STAKE_FIELDS = "stakedTokens delegatedTokens delegatedCapacity allocatedTo
 // Network-wide reward parameters — one tiny query. Gross-GRT/day for an indexer =
 // reward_index * issuance_per_block * blocks_per_day / total_signal (see the rewards dashboard row).
 const networkQuery =
-  `{ graphNetworks(first:1){ totalTokensSignalled networkGRTIssuancePerBlock } }`;
+  `{ graphNetworks(first:1){ totalTokensSignalled networkGRTIssuancePerBlock currentEpoch maxAllocationEpochs } }`;
 // One batched query for the explicit detail set (id_in) — no min-stake floor: an explicitly-tracked
 // indexer (e.g. ours) always shows, whatever its stake.
 const stakeListQuery = (ids: string[]) =>
@@ -80,7 +80,7 @@ const stakeAllQuery = (minWei: string) =>
   `{ indexers(first:1000, orderBy:stakedTokens, orderDirection:desc, where:{stakedTokens_gt:"${minWei}"}){ id ${STAKE_FIELDS} } }`;
 const allocQuery = (id: string) =>
   `{ indexer(id:"${id}"){ allocations(first:1000, where:{status:Active}){ ` +
-  `allocatedTokens subgraphDeployment { ipfsHash stakedTokens signalledTokens ` +
+  `allocatedTokens createdAtEpoch subgraphDeployment { ipfsHash stakedTokens signalledTokens ` +
   // full active-allocation set on each deployment → count distinct indexers (network-wide, from the
   // network subgraph — populated even when the gateway QoS feed has no data for the subgraph).
   `indexerAllocations(first:1000, where:{status:Active}){ indexer { id } } } } } }`;
@@ -113,7 +113,7 @@ const FIELDS: [string, string, string][] = [
 ];
 
 export type StakeRow = { id: string; name: string; data: Record<string, unknown> };
-export type AllocRow = { indexer: string; indexerName: string; hash: string; allocated: number };
+export type AllocRow = { indexer: string; indexerName: string; hash: string; allocated: number; createdAtEpoch: number };
 export type DeploymentAgg = { total: number; signal: number; indexers: number };
 
 export function renderStake(rows: StakeRow[]): string {
@@ -144,7 +144,7 @@ export function renderNetwork(net: { totalTokensSignalled?: unknown; networkGRTI
   ].join("\n") + "\n";
 }
 
-export function renderAlloc(allocs: AllocRow[]): string {
+export function renderAlloc(allocs: AllocRow[], currentEpoch = 0): string {
   // sum multiple active allocations by the same indexer on the same deployment
   const agg = new Map<string, { indexer: string; name: string; hash: string; v: number }>();
   for (const a of allocs) {
@@ -157,6 +157,27 @@ export function renderAlloc(allocs: AllocRow[]): string {
     "# TYPE indexer_subgraph_allocated_grt gauge"];
   for (const { indexer, name, hash, v } of agg.values())
     out.push(`indexer_subgraph_allocated_grt{indexer="${esc(indexer)}",indexer_name="${esc(name)}",deployment="${esc(hash)}"} ${v.toFixed(6)}`);
+  // Allocation ages (2026-08-25): rewards forfeit at maxAllocationEpochs (28). A celo EBO gap
+  // let three positions silently age to 34 — nothing in the fleet exported ages, so nothing
+  // could alert (k8s-subgraphs#772). Max age + at-risk count per indexer, from createdAtEpoch.
+  if (currentEpoch > 0) {
+    const byIx = new Map<string, { name: string; max: number; atRisk: number }>();
+    for (const a of allocs) {
+      const cur = byIx.get(a.indexer) ?? { name: a.indexerName, max: 0, atRisk: 0 };
+      const age = a.createdAtEpoch > 0 ? currentEpoch - a.createdAtEpoch : 0;
+      cur.max = Math.max(cur.max, age);
+      if (age >= 26) cur.atRisk++;
+      byIx.set(a.indexer, cur);
+    }
+    out.push("# HELP indexer_allocation_max_age_epochs Oldest active allocation age in epochs (rewards forfeit at maxAllocationEpochs, 28)",
+      "# TYPE indexer_allocation_max_age_epochs gauge",
+      "# HELP indexer_allocations_at_risk Active allocations aged >= 26 epochs (2 epochs from forfeiture)",
+      "# TYPE indexer_allocations_at_risk gauge");
+    for (const [ix, d] of byIx) {
+      out.push(`indexer_allocation_max_age_epochs{indexer="${esc(ix)}",indexer_name="${esc(d.name)}"} ${d.max}`);
+      out.push(`indexer_allocations_at_risk{indexer="${esc(ix)}",indexer_name="${esc(d.name)}"} ${d.atRisk}`);
+    }
+  }
   return out.join("\n") + "\n";
 }
 
@@ -185,10 +206,12 @@ let stakeBlock = "", allocBlock = "", depBlock = "", nameBlock = "", netBlock = 
 let up = 0, lastRefresh = 0, trackedCount = 0, deploymentCount = 0;
 
 async function refreshEconomics(): Promise<void> {
+  let lastCurrentEpoch = 0;
   let stakeOk = false, allocOk = false, tracked = 0;
   // network-wide reward parameters (total signal + issuance) — non-fatal if it blips
   try {
     const net = (await gql(networkQuery))?.graphNetworks?.[0];
+    lastCurrentEpoch = Number(net?.currentEpoch ?? 0);
     if (net) netBlock = renderNetwork(net);
   } catch (e) { console.error(`network: ${e}`); }
   // stake — ONE batched query for the target set (detail list, or every indexer over the floor)
@@ -214,7 +237,7 @@ async function refreshEconomics(): Promise<void> {
         const sd = a.subgraphDeployment ?? {};
         const hash = sd.ipfsHash;
         if (!hash) continue;
-        allocs.push({ indexer: id, indexerName: iname, hash, allocated: grt(a.allocatedTokens) });
+        allocs.push({ indexer: id, indexerName: iname, hash, allocated: grt(a.allocatedTokens), createdAtEpoch: Number(a.createdAtEpoch ?? 0) });
         // distinct indexers with an active allocation on this deployment (network-wide)
         const ixs = new Set((sd.indexerAllocations ?? []).map((x: any) => x?.indexer?.id).filter(Boolean));
         deps.set(hash, { total: grt(sd.stakedTokens), signal: grt(sd.signalledTokens), indexers: ixs.size });
@@ -222,7 +245,7 @@ async function refreshEconomics(): Promise<void> {
     } catch (e) { console.error(`alloc ${id}: ${e}`); allocErr++; }
   }
   if (allocErr < INDEXERS.length) {
-    allocBlock = renderAlloc(allocs);
+    allocBlock = renderAlloc(allocs, lastCurrentEpoch);
     depBlock = renderDeployments(deps);
     deploymentCount = deps.size;
     allocOk = true;
