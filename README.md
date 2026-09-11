@@ -98,3 +98,14 @@ bun run typecheck
   flips `_up` to 0; fast-retries every 30s so a transient blip never leaves stale data for long.
 - **Multiple indexers** — put any wallets in `INDEXERS`. Per-deployment `total`/`signal` are
   deployment-global, so they're deduped across the union of tracked indexers' allocations.
+
+Horizon PoI monitoring uses `max(createdAt, latestPoiPresentedAt)` in seconds and
+reads `maxPOIStaleness()` from SubgraphService on Arbitrum (`POI_RPC_URL`, default
+public Arbitrum RPC). `indexer_poi_allocations_at_risk` counts native allocations
+within two days of that live deadline; `indexer_poi_allocations_stale` uses the
+contract's strict greater-than boundary. The existing epoch-age gauges now cover
+legacy allocations only. Alerts must also check
+`subgraphs_network_exporter_poi_up` and
+`subgraphs_network_exporter_poi_last_success_seconds`: a stale/erroring source must
+not appear healthy because the economics loop still succeeds. Native monitoring
+fails closed on incomplete or stale Network data and keeps the last good values.
