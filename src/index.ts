@@ -1,3 +1,4 @@
+import { poiSummary, liveStaleness } from "./poi";
 // subgraphs-network-exporter — serve The Graph network subgraph's on-chain indexer economics as
 // Prometheus metrics.
 //
@@ -80,7 +81,7 @@ const stakeAllQuery = (minWei: string) =>
   `{ indexers(first:1000, orderBy:stakedTokens, orderDirection:desc, where:{stakedTokens_gt:"${minWei}"}){ id ${STAKE_FIELDS} } }`;
 const allocQuery = (id: string) =>
   `{ indexer(id:"${id}"){ allocations(first:1000, where:{status:Active}){ ` +
-  `allocatedTokens createdAtEpoch subgraphDeployment { ipfsHash stakedTokens signalledTokens ` +
+  `allocatedTokens createdAtEpoch isLegacy subgraphDeployment { ipfsHash stakedTokens signalledTokens ` +
   // full active-allocation set on each deployment → count distinct indexers (network-wide, from the
   // network subgraph — populated even when the gateway QoS feed has no data for the subgraph).
   `indexerAllocations(first:1000, where:{status:Active}){ indexer { id } } } } } }`;
@@ -113,7 +114,7 @@ const FIELDS: [string, string, string][] = [
 ];
 
 export type StakeRow = { id: string; name: string; data: Record<string, unknown> };
-export type AllocRow = { indexer: string; indexerName: string; hash: string; allocated: number; createdAtEpoch: number };
+export type AllocRow = { indexer: string; indexerName: string; hash: string; allocated: number; createdAtEpoch: number; isLegacy?: boolean };
 export type DeploymentAgg = { total: number; signal: number; indexers: number };
 
 export function renderStake(rows: StakeRow[]): string {
@@ -163,15 +164,16 @@ export function renderAlloc(allocs: AllocRow[], currentEpoch = 0): string {
   if (currentEpoch > 0) {
     const byIx = new Map<string, { name: string; max: number; atRisk: number }>();
     for (const a of allocs) {
+      if (a.isLegacy === false) continue;
       const cur = byIx.get(a.indexer) ?? { name: a.indexerName, max: 0, atRisk: 0 };
       const age = a.createdAtEpoch > 0 ? currentEpoch - a.createdAtEpoch : 0;
       cur.max = Math.max(cur.max, age);
       if (age >= 26) cur.atRisk++;
       byIx.set(a.indexer, cur);
     }
-    out.push("# HELP indexer_allocation_max_age_epochs Oldest active allocation age in epochs (rewards forfeit at maxAllocationEpochs, 28)",
+    out.push("# HELP indexer_allocation_max_age_epochs Oldest active legacy allocation age in epochs",
       "# TYPE indexer_allocation_max_age_epochs gauge",
-      "# HELP indexer_allocations_at_risk Active allocations aged >= 26 epochs (2 epochs from forfeiture)",
+      "# HELP indexer_allocations_at_risk Active legacy allocations aged >= 26 epochs",
       "# TYPE indexer_allocations_at_risk gauge");
     for (const [ix, d] of byIx) {
       out.push(`indexer_allocation_max_age_epochs{indexer="${esc(ix)}",indexer_name="${esc(d.name)}"} ${d.max}`);
@@ -203,6 +205,7 @@ export function renderNames(names: Map<string, string>): string {
 
 // ── runtime state ────────────────────────────────────────────────────────────────────────────────
 let stakeBlock = "", allocBlock = "", depBlock = "", nameBlock = "", netBlock = "";
+let poiBlock = "", poiUp = 0, poiLastSuccess = 0;
 let up = 0, lastRefresh = 0, trackedCount = 0, deploymentCount = 0;
 
 async function refreshEconomics(): Promise<void> {
@@ -237,7 +240,7 @@ async function refreshEconomics(): Promise<void> {
         const sd = a.subgraphDeployment ?? {};
         const hash = sd.ipfsHash;
         if (!hash) continue;
-        allocs.push({ indexer: id, indexerName: iname, hash, allocated: grt(a.allocatedTokens), createdAtEpoch: Number(a.createdAtEpoch ?? 0) });
+        allocs.push({ indexer: id, indexerName: iname, hash, allocated: grt(a.allocatedTokens), createdAtEpoch: Number(a.createdAtEpoch ?? 0), isLegacy: a.isLegacy });
         // distinct indexers with an active allocation on this deployment (network-wide)
         const ixs = new Set((sd.indexerAllocations ?? []).map((x: any) => x?.indexer?.id).filter(Boolean));
         deps.set(hash, { total: grt(sd.stakedTokens), signal: grt(sd.signalledTokens), indexers: ixs.size });
@@ -256,6 +259,29 @@ async function refreshEconomics(): Promise<void> {
   lastRefresh = Math.floor(Date.now() / 1000);
   if (up) console.log(`refreshed: stake_indexers=${tracked}, allocations=${allocs.length}, deployments=${deploymentCount}`);
   else console.error("refresh failed (stake query + every allocation query)");
+}
+
+async function refreshPoi(): Promise<void> {
+  try {
+    const interval = await liveStaleness(process.env.POI_RPC_URL ?? "https://arb1.arbitrum.io/rpc");
+    const now = Math.floor(Date.now()/1000), out: string[] = [];
+    for (const id of INDEXERS) {
+      const d = await gql(`{_meta{block{timestamp}hasIndexingErrors} indexer(id:"${id}"){allocations(first:1000,where:{status:Active}){isLegacy createdAt latestPoiPresentedAt}}}`);
+      if (!d?._meta || d._meta.hasIndexingErrors || now-Number(d._meta.block.timestamp)>300 || !d.indexer || d.indexer.allocations.length>=1000) throw Error("PoI source stale, absent or truncated");
+      const summary=poiSummary(d.indexer.allocations,now,interval);
+      const labels=`indexer="${esc(id)}",indexer_name="${esc(nameOf(id))}"`;
+      const values: Record<string,number> = {
+        indexer_native_allocations:summary.count,
+        indexer_poi_max_age_seconds:summary.oldest,
+        indexer_poi_deadline_remaining_seconds:summary.remaining,
+        indexer_poi_allocations_at_risk:summary.atRisk,
+        indexer_poi_allocations_stale:summary.stale,
+        indexer_poi_max_staleness_seconds:interval,
+      };
+      for(const [metric,value] of Object.entries(values)) out.push(`${metric}{${labels}} ${value}`);
+    }
+    poiBlock=out.join("\n")+"\n"; poiUp=1; poiLastSuccess=now;
+  } catch { poiUp=0; console.error("PoI freshness or deadline query failed"); }
 }
 
 async function refreshNames(): Promise<void> {
@@ -280,7 +306,9 @@ async function refreshNames(): Promise<void> {
 }
 
 function body(): string {
-  return stakeBlock + allocBlock + depBlock + nameBlock + netBlock +
+  return stakeBlock + allocBlock + depBlock + nameBlock + netBlock + poiBlock +
+    `subgraphs_network_exporter_poi_up ${poiUp}\n` +
+    `subgraphs_network_exporter_poi_last_success_seconds ${poiLastSuccess}\n` +
     "# TYPE subgraphs_network_exporter_up gauge\n" + `subgraphs_network_exporter_up ${up}\n` +
     "# TYPE subgraphs_network_exporter_last_refresh_seconds gauge\n" + `subgraphs_network_exporter_last_refresh_seconds ${lastRefresh}\n` +
     "# TYPE subgraphs_network_exporter_indexers_tracked gauge\n" + `subgraphs_network_exporter_indexers_tracked ${trackedCount}\n` +
@@ -293,6 +321,7 @@ if (import.meta.main) {
   // Fast-retry (30s) after a failure so a transient GraphQL blip never leaves us stale for long and
   // never fails a k8s rollout (readiness gates on /healthz → the first good refresh).
   (async function loop() { await refreshEconomics(); setTimeout(loop, up ? REFRESH_MS : 30_000); })();
+  (async function ploop() { await refreshPoi(); setTimeout(ploop, REFRESH_MS); })();
   (async function nloop() { await refreshNames(); setTimeout(nloop, NAME_REFRESH_MS); })();
 
   Bun.serve({
