@@ -51,6 +51,19 @@ Bigger arc across repos: decommission the old `estimator` as a Grafana data sour
   (stake-only gauges for every registered indexer over `MIN_STAKE_GRT`, via one batched query — never
   fan out per-indexer allocation queries across hundreds of indexers).
 
+## Dependencies
+
+- Bun only: `package.json` sets `packageManager` and `devEngines`, so npm refuses to install or run
+  scripts here. Use `bun install`, `bun run <script>` and `bun add <pkg>`.
+- CI installs with `bun install --frozen-lockfile`; the Docker image has no install step (no runtime
+  dependencies). Commit `bun.lock` with every dependency change.
+- `bunfig.toml` lets `bun add` and `bun update` pick only versions published at least 5 days ago
+  (`minimumReleaseAge = 432000`, in seconds) and saves exact versions. `.npmrc` sets
+  `min-release-age=5` (in days) for any npm still in use.
+- Never download a tool on the fly (`npx <pkg>`, `bunx <pkg>`, `<pkg>@latest`): add it as a pinned
+  devDependency and run `bunx --no-install <bin>`.
+- No Dependabot or Renovate: update dependencies by hand and review the `bun.lock` diff.
+
 ## Conventions
 
 - Keep it dependency-free at runtime (Bun global `fetch`). Types-only devDeps (`@noble/hashes` is used
